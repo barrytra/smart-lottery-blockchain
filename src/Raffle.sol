@@ -36,9 +36,10 @@ contract Raffle is VRFConsumerBaseV2 {
     error Raffle__NotEnoughEthSent();
     error Raffle__TransferToWinnerfailed();
     error Raffle__RaffleNotOpen();
+    error Raffle__upkeepIsNotNeeded(uint256 currentBalance, uint256 numPlayers, uint256 rafflestate);
 
     //  type declarations
-    enum RaffleState{
+    enum RaffleState {
         OPEN, // 0
         CALCULATING // 1
     }
@@ -62,6 +63,7 @@ contract Raffle is VRFConsumerBaseV2 {
     // events
     event EnteredRaffle(address indexed player);
     event PickedWinner(address indexed winner);
+    event RequestedRaffleWinner(uint256 indexed requestId);
 
     constructor(
         uint256 entranceFee,
@@ -85,7 +87,7 @@ contract Raffle is VRFConsumerBaseV2 {
         if (msg.value < i_entranceFee) {
             revert Raffle__NotEnoughEthSent();
         }
-        if(s_raffleState != RaffleState.OPEN){
+        if (s_raffleState != RaffleState.OPEN) {
             revert Raffle__RaffleNotOpen();
         }
         s_players.push(payable(msg.sender));
@@ -93,7 +95,36 @@ contract Raffle is VRFConsumerBaseV2 {
         emit EnteredRaffle(msg.sender);
     }
 
-    function pickWinner() external {
+    // when is the winner supposed to be picked
+    /**
+     * @dev This the function that chainlink automation nodes call to see if its time to perform an upkeep.
+     * The following should be true for this to return true:
+     * 1. Time interval has passed between raffle runs
+     * 2. Raffle is in open state
+     * 3.The contract has eth(aka players)
+     * 4. The subscription is funded with Link
+     * @return upkeepNeeded
+     * @return
+     */
+    function checkUpkeep(bytes memory /* checkData */ )
+        public
+        view
+        returns (bool upkeepNeeded, bytes memory /* performData */ )
+    {
+        bool timeHasPassed = (block.timestamp - s_lastTimeStamp) >= i_interval;
+        bool isOpen = s_raffleState == RaffleState.OPEN;
+        bool hasBalance = address(this).balance > 0;
+        bool hasPlayers = s_players.length > 0;
+        upkeepNeeded = (timeHasPassed && isOpen && hasBalance && hasPlayers);
+        return (upkeepNeeded, "0x0");
+    }
+
+    function performUpkeep(bytes calldata /* performData */ ) external {
+        (bool upkeepNeeded,) = checkUpkeep("");
+        if (!upkeepNeeded) {
+            revert Raffle__upkeepIsNotNeeded(address(this).balance, s_players.length, uint256(s_raffleState));
+        }
+
         if ((block.timestamp - s_lastTimeStamp) < i_interval) {
             revert();
         }
@@ -105,13 +136,11 @@ contract Raffle is VRFConsumerBaseV2 {
             i_callbackGasLimit,
             NUM_WORDS
         );
+        emit RequestedRaffleWinner(requestId);
     }
 
     // CEI: checks, effects, interactions
-    function fulfillRandomWords(
-        uint256 requestId,
-        uint256[] memory randomWords
-    ) internal virtual override {
+    function fulfillRandomWords(uint256, uint256[] memory randomWords) internal virtual override {
         // Checks
         // Effects (our own contract)
         uint256 indexOfTheWinner = randomWords[0] % s_players.length;
@@ -124,8 +153,38 @@ contract Raffle is VRFConsumerBaseV2 {
 
         // Interactions (interacting with other contracts)
         (bool success,) = winner.call{value: address(this).balance}("");
-        if(!success){
+        if (!success) {
             revert Raffle__TransferToWinnerfailed();
         }
+    }
+
+    /** Getter Functions */ 
+
+    function getRaffleState() public view returns (RaffleState){
+        return s_raffleState;
+    }
+
+    function getRecentWinner() public view returns (address) {
+        return s_recentWinner;
+    }
+
+    function getPlayer(uint256 index) public view returns (address) {
+        return s_players[index];
+    }
+
+    function getLastTimeStamp() public view returns (uint256) {
+        return s_lastTimeStamp;
+    }
+
+    function getInterval() public view returns (uint256) {
+        return i_interval;
+    }
+
+    function getEntranceFee() public view returns (uint256) {
+        return i_entranceFee;
+    }
+
+    function getNumberOfPlayers() public view returns (uint256) {
+        return s_players.length;
     }
 }
